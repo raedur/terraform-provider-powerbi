@@ -55,6 +55,10 @@ func Provider() *schema.Provider {
 			"powerbi_workspace": DataSourceWorkspace(),
 		},
 
+		DataSourcesMap: map[string]*schema.Resource{
+			"powerbi_capacity": DataCapacity(),
+		},
+
 		ConfigureFunc: providerConfigure,
 	}
 }
