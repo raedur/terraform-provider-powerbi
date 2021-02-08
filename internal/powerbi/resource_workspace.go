@@ -25,10 +25,15 @@ func ResourceWorkspace() *schema.Resource {
 				ForceNew:    true,
 				Description: "Name of the workspace.",
 			},
-			"capacity_id": {
+			"capacity_to_use_display_name": {
 				Type:        schema.TypeString,
 				Optional:    true,
-				Description: "Capacity ID to be assigned to workspace.",
+				Description: "Display Name of the capacity to use for this workspace.",
+			},
+			"capacity_id": {
+				Type:        schema.TypeString,
+				Computed:    true,
+				Description: "The ID of the capacity assigned to this workspace.",
 			},
 		},
 	}
@@ -36,8 +41,6 @@ func ResourceWorkspace() *schema.Resource {
 
 func createWorkspace(d *schema.ResourceData, meta interface{}) error {
 	client := meta.(*powerbiapi.Client)
-
-	capacityID := d.Get("capacity_id").(string)
 
 	resp, err := client.CreateGroup(powerbiapi.CreateGroupRequest{
 		Name: d.Get("name").(string),
@@ -47,14 +50,12 @@ func createWorkspace(d *schema.ResourceData, meta interface{}) error {
 	}
 
 	d.SetId(resp.ID)
-
-	if capacityID != "" {
-		err := assignToCapacity(d, meta)
+	if d.Get("capacity_to_use_display_name") != "" {
+		err := setCapacity(d, meta)
 		if err != nil {
 			return err
 		}
 	}
-
 	return readWorkspace(d, meta)
 }
 
@@ -71,10 +72,16 @@ func readWorkspace(d *schema.ResourceData, meta interface{}) error {
 	} else {
 		d.SetId(workspace.ID)
 		d.Set("name", workspace.Name)
-		if workspace.IsOnDedicatedCapacity {
-			d.Set("capacity_id", workspace.CapacityID)
+		capacityID := workspace.CapacityID
+		d.Set("capacity_id", capacityID)
+		if capacityID == "" {
+			d.Set("capacity_to_use_display_name", "")
 		} else {
-			d.Set("capacity_id", "")
+			capacity, err := getCapacityById(client, capacityID)
+			if err != nil {
+				return err
+			}
+			d.Set("capacity_to_use_display_name", capacity.DisplayName)
 		}
 	}
 
@@ -82,20 +89,82 @@ func readWorkspace(d *schema.ResourceData, meta interface{}) error {
 }
 
 func updateWorkspace(d *schema.ResourceData, meta interface{}) error {
-
-	if d.HasChange("capacity_id") {
-		if capacityID := d.Get("capacity_id").(string); capacityID == "" {
-			d.Set("capacity_id", "00000000-0000-0000-0000-000000000000")
-		}
-
-		err := assignToCapacity(d, meta)
+	if d.HasChange("capacity_to_use_display_name") {
+		err := setCapacity(d, meta)
 		if err != nil {
 			return err
 		}
 	}
-
-	return readWorkspace(d, meta)
+	return nil
 }
+
+func setCapacity(d *schema.ResourceData, meta interface{}) error {
+	client := meta.(*powerbiapi.Client)
+	workspaceId := d.Id()
+	displayName := d.Get("capacity_to_use_display_name").(string)
+	// setting to this capacity_id unassigns this workspace
+	capacityId := "00000000-0000-0000-0000-000000000000"
+	if displayName != "" {
+		item, err := getCapacityByName(client, displayName)
+		if err != nil {
+			return err
+		}
+		capacityId = item.ID
+	}
+	err := client.GroupAssignToCapacity(workspaceId, powerbiapi.GroupAssignToCapacityRequest{
+		CapacityID: capacityId,
+	})
+	if err != nil {
+		return err
+	}
+	err = d.Set("capacity_to_use_display_name", displayName)
+	if err != nil {
+		return err
+	}
+	err = d.Set("capacity_id", "")
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func getCapacityByName(client *powerbiapi.Client, displayName string) (*powerbiapi.GetCapacitiesResponseItem, error) {
+	capacities, err := client.GetCapacities()
+	if err != nil {
+		return nil, err
+	}
+	var item *powerbiapi.GetCapacitiesResponseItem = nil
+	for _, responseItem := range capacities.Value {
+		if responseItem.DisplayName == displayName {
+			item = &responseItem
+			break
+		}
+	}
+	if item == nil {
+		return nil, fmt.Errorf("capacity not found for display name: %s", displayName)
+	}
+	return item, nil
+}
+
+func getCapacityById(client *powerbiapi.Client, ID string) (*powerbiapi.GetCapacitiesResponseItem, error) {
+	capacities, err := client.GetCapacities()
+	if err != nil {
+		return nil, err
+	}
+	var item *powerbiapi.GetCapacitiesResponseItem = nil
+	for _, responseItem := range capacities.Value {
+		if responseItem.ID == ID {
+			item = &responseItem
+			break
+		}
+	}
+	if item == nil {
+		return nil, fmt.Errorf("capacity not found with ID: %s", ID)
+	}
+	return item, nil
+}
+
 
 func deleteWorkspace(d *schema.ResourceData, meta interface{}) error {
 	client := meta.(*powerbiapi.Client)
