@@ -1,6 +1,7 @@
 package powerbi
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"time"
@@ -73,6 +74,18 @@ func ResourcePBIX() *schema.Resource {
 						},
 					},
 				},
+			},
+			"basic_auth_username": {
+				Type:        schema.TypeString,
+				Description: "Basic auth username to be used for all datasources",
+				Optional:    true,
+				Default:     "",
+			},
+			"basic_auth_password": {
+				Type:        schema.TypeString,
+				Description: "Basic auth password to be used for all datasources",
+				Optional:    true,
+				Default:     "",
 			},
 			"datasource": {
 				Type:        schema.TypeSet,
@@ -154,6 +167,11 @@ func createPBIX(d *schema.ResourceData, meta interface{}) error {
 		return err
 	}
 
+	err = setBasicAuthCredentials(d, meta)
+	if err != nil {
+		return err
+	}
+
 	d.Partial(false)
 
 	return nil
@@ -177,6 +195,16 @@ func readPBIX(d *schema.ResourceData, meta interface{}) error {
 	}
 
 	err = readPBIXDatasources(d, meta)
+	if err != nil {
+		return err
+	}
+
+	// force these to always update
+	err = d.Set("basic_auth_username", "")
+	if err != nil {
+		return err
+	}
+	err = d.Set("basic_auth_password", "")
 	if err != nil {
 		return err
 	}
@@ -222,6 +250,57 @@ func updatePBIX(d *schema.ResourceData, meta interface{}) error {
 
 	}
 
+	if d.HasChange("basic_auth_username") || d.HasChange("basic_auth_password") {
+		err := setBasicAuthCredentials(d, meta)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func setBasicAuthCredentials(d *schema.ResourceData, meta interface{}) error {
+	client := meta.(*powerbiapi.Client)
+	datasetID := d.Get("dataset_id").(string)
+	groupID := d.Get("workspace_id").(string)
+	username := d.Get("basic_auth_username").(string)
+	password := d.Get("basic_auth_password").(string)
+	if username == "" || password == "" {
+		return nil
+	}
+	gatewayDatasources, err := client.GetGatewayDatasourcesInGroup(groupID, datasetID)
+	if err != nil {
+		return err
+	}
+	if len(gatewayDatasources.Value) == 0 {
+		return nil
+	}
+	for _, datasource := range gatewayDatasources.Value {
+		credentialDetails := powerbiapi.UpdateBasicAuthCredentialsForDatasourceRequestCredentialDetails{
+			CredentialType:              "Basic",
+			Credentials:                 fmt.Sprintf("{\"credentialData\":[{\"name\":\"username\", \"value\":\"%s\"},{\"name\":\"password\", \"value\":\"%s\"}]}", username, password),
+			EncryptedConnection:         "Encrypted",
+			EncryptionAlgorithm:         "None",
+			PrivacyLevel:                "None",
+			UseEndUserOAuth2Credentials: "False",
+		}
+		request := powerbiapi.UpdateBasicAuthCredentialsForDatasourceRequest{
+			CredentialDetails: credentialDetails,
+		}
+		err := client.UpdateBasicAuthCredentialsForDatasource(datasource.ID, datasource.GatewayID, request)
+		if err != nil {
+			return err
+		}
+		err = d.Set("basic_auth_username", username)
+		if err != nil {
+			return err
+		}
+		err = d.Set("basic_auth_password", password)
+		if err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
